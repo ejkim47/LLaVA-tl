@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-import os
+import os, glob
 import copy
 from dataclasses import dataclass, field
 import json
@@ -26,6 +26,7 @@ import torch
 
 import transformers
 import tokenizers
+import av
 
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from torch.utils.data import Dataset
@@ -36,6 +37,9 @@ from llava.model import *
 from llava.mm_utils import tokenizer_image_token
 
 from PIL import Image
+import numpy as np
+
+import llava.config
 
 
 local_rank = None
@@ -74,6 +78,9 @@ class DataArguments:
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
+    vision_type: Optional[str] = field(default="image")
+    num_frames: int = 16
+    randomness: bool = True
 
 
 @dataclass
@@ -662,80 +669,173 @@ class LazySupervisedDataset(Dataset):
                  tokenizer: transformers.PreTrainedTokenizer,
                  data_args: DataArguments):
         super(LazySupervisedDataset, self).__init__()
-        list_data_dict = json.load(open(data_path, "r"))
+        if data_path.endswith('.json'):
+            list_data_dict = json.load(open(data_path, "r"))
+            self.list_data_dict = list_data_dict
+        elif os.path.isdir(data_path):
+            self.json_list = glob.glob(os.path.join(data_path, '*.json'))
+        else:
+            raise ValueError("data_path should be the path to a JSON file or a directory containing JSON files")
 
         rank0_print("Formatting inputs...Skip in lazy mode")
         self.tokenizer = tokenizer
-        self.list_data_dict = list_data_dict
         self.data_args = data_args
 
     def __len__(self):
-        return len(self.list_data_dict)
+        if hasattr(self, 'list_data_dict'):
+            return len(self.list_data_dict)
+        else:
+            return len(self.json_list)
 
     @property
     def lengths(self):
         length_list = []
-        for sample in self.list_data_dict:
-            img_tokens = 128 if 'image' in sample else 0
-            length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
+        if hasattr(self, 'list_data_dict'):
+            for sample in self.list_data_dict:
+                img_tokens = 128 if 'image' in sample else 0
+                length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
+        else:
+            for json_file in self.json_list:
+                with open(json_file, 'r') as f:
+                    sample = json.load(f)
+                    img_tokens = 128 if 'image' in sample else 0
+                    length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
         return length_list
 
     @property
     def modality_lengths(self):
         length_list = []
-        for sample in self.list_data_dict:
-            cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
-            cur_len = cur_len if 'image' in sample else -cur_len
-            length_list.append(cur_len)
+        if hasattr(self, 'list_data_dict'):
+            for sample in self.list_data_dict:
+                cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
+                cur_len = cur_len if 'image' in sample else -cur_len
+                length_list.append(cur_len)
+        else:
+            for json_file in self.json_list:
+                with open(json_file, 'r') as f:
+                    sample = json.load(f)
+                    cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
+                    cur_len = cur_len if 'image' in sample else -cur_len
+                    length_list.append(cur_len)
         return length_list
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        sources = self.list_data_dict[i]
+        if hasattr(self, 'list_data_dict'):
+            sources = self.list_data_dict[i]
+            item = sources
+        else:
+            with open(self.json_list[i], 'r') as f:
+                sources = json.load(f)
+                item = sources
         if isinstance(i, int):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
-        if 'image' in sources[0]:
-            image_file = self.list_data_dict[i]['image']
-            image_folder = self.data_args.image_folder
-            processor = self.data_args.image_processor
-            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
-            if self.data_args.image_aspect_ratio == 'pad':
-                def expand2square(pil_img, background_color):
-                    width, height = pil_img.size
-                    if width == height:
-                        return pil_img
-                    elif width > height:
-                        result = Image.new(pil_img.mode, (width, width), background_color)
-                        result.paste(pil_img, (0, (width - height) // 2))
-                        return result
-                    else:
-                        result = Image.new(pil_img.mode, (height, height), background_color)
-                        result.paste(pil_img, ((height - width) // 2, 0))
-                        return result
-                image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+        if self.data_args.vision_type == 'image':
+            if 'image' in sources[0]:
+                image_file = item['image']
+                image_folder = self.data_args.image_folder
+                processor = self.data_args.image_processor
+                image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+                if self.data_args.image_aspect_ratio == 'pad':
+                    def expand2square(pil_img, background_color):
+                        width, height = pil_img.size
+                        if width == height:
+                            return pil_img
+                        elif width > height:
+                            result = Image.new(pil_img.mode, (width, width), background_color)
+                            result.paste(pil_img, (0, (width - height) // 2))
+                            return result
+                        else:
+                            result = Image.new(pil_img.mode, (height, height), background_color)
+                            result.paste(pil_img, ((height - width) // 2, 0))
+                            return result
+                    image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+                    image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                else:
+                    image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+                sources = preprocess_multimodal(
+                    copy.deepcopy([e["conversations"] for e in sources]),
+                    self.data_args)
             else:
-                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-            sources = preprocess_multimodal(
-                copy.deepcopy([e["conversations"] for e in sources]),
-                self.data_args)
-        else:
-            sources = copy.deepcopy([e["conversations"] for e in sources])
-        data_dict = preprocess(
-            sources,
-            self.tokenizer,
-            has_image=('image' in self.list_data_dict[i]))
-        if isinstance(i, int):
-            data_dict = dict(input_ids=data_dict["input_ids"][0],
-                             labels=data_dict["labels"][0])
+                sources = copy.deepcopy([e["conversations"] for e in sources])
+            data_dict = preprocess(
+                sources,
+                self.tokenizer,
+                has_image=('image' in item))
+            if isinstance(i, int):
+                data_dict = dict(input_ids=data_dict["input_ids"][0],
+                                 labels=data_dict["labels"][0])
 
-        # image exist in the data
-        if 'image' in self.list_data_dict[i]:
-            data_dict['image'] = image
-        elif self.data_args.is_multimodal:
-            # image does not exist in the data, but the model is multimodal
-            crop_size = self.data_args.image_processor.crop_size
-            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            # image exist in the data
+            if 'image' in item:
+                data_dict['image'] = image
+            elif self.data_args.is_multimodal:
+                # image does not exist in the data, but the model is multimodal
+                crop_size = self.data_args.image_processor.crop_size
+                data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+        elif self.data_args.vision_type == 'video':
+            if 'video' in sources[0]:
+                video_file = item['video']
+                start_time, end_time = float(item['Start_timestamp']), float(item['End_timestamp'])
+                image_folder = self.data_args.image_folder
+                processor = self.data_args.image_processor
+                container = av.open(os.path.join(image_folder, video_file))
+                frames = []
+                for frame in container.decode(video=0):
+                    if frame.time > end_time:
+                        break
+                    if frame.time >= start_time:
+                        frames.append(frame)
+                n_frames = len(frames)
+                if self.data_args.randomness:
+                    import random
+                    step = n_frames // self.data_args.num_frames
+                    random_step = random.randint(1, step)  # 랜덤 간격
+                    start_idx = random.randint(0, n_frames - random_step * self.data_args.num_frames)
+                    video = [frames[start_idx + i * random_step] for i in range(self.data_args.num_frames)]
+                else:
+                    video = [frames[i] for i in np.arange(0, self.data_args.num_frames, n_frames // self.data_args.num_frames)]
+                video = [frame.to_image().convert('RGB') for frame in video]
+
+                if self.data_args.image_aspect_ratio == 'pad':
+                    def expand2square(pil_img, background_color):
+                        width, height = pil_img.size
+                        if width == height:
+                            return pil_img
+                        elif width > height:
+                            result = Image.new(pil_img.mode, (width, width), background_color)
+                            result.paste(pil_img, (0, (width - height) // 2))
+                            return result
+                        else:
+                            result = Image.new(pil_img.mode, (height, height), background_color)
+                            result.paste(pil_img, ((height - width) // 2, 0))
+                            return result
+                    video = [expand2square(image, tuple(int(x*255) for x in processor.image_mean)) for image in video]
+                    video = processor.preprocess(video, return_tensors='pt')['pixel_values'][0]
+                else:
+                    video = processor.preprocess(video, return_tensors='pt')['pixel_values'][0]
+                sources = preprocess_multimodal(
+                    copy.deepcopy([e["conversations"] for e in sources]),
+                    self.data_args)
+            else:
+                sources = copy.deepcopy([e["conversations"] for e in sources])
+            data_dict = preprocess(
+                sources,
+                self.tokenizer,
+                has_image=('video' in item))
+            if isinstance(i, int):
+                data_dict = dict(input_ids=data_dict["input_ids"][0],
+                                 labels=data_dict["labels"][0])
+
+            # image exist in the data
+            if 'video' in item:
+                data_dict['image'] = video
+            elif self.data_args.is_multimodal:
+                # image does not exist in the data, but the model is multimodal
+                crop_size = self.data_args.image_processor.crop_size
+                data_dict['image'] = torch.zeros(3, self.data_args.num_frames, crop_size['height'], crop_size['width'])
+        else:
+            raise ValueError("data_args.vision_type should be one of ['image', 'video']")
         return data_dict
 
 
@@ -794,6 +894,12 @@ def train(attn_implementation=None):
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
+    # Wandb log custom setting
+    if local_rank == 0 and 'wandb' in training_args.report_to:
+        import wandb
+        wandb.login(key=llava.config.WANDB_API_KEY)
+        wandb.init(project=llava.config.WANDB_PROJECT_NAME)
+
     bnb_model_from_pretrained_args = {}
     if training_args.bits in [4, 8]:
         from transformers import BitsAndBytesConfig
@@ -821,14 +927,17 @@ def train(attn_implementation=None):
                 model_args.model_name_or_path,
                 config=config,
                 cache_dir=training_args.cache_dir,
+                # device_map=training_args.device,
                 **bnb_model_from_pretrained_args
             )
         else:
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
+                token=llava.config.HF_TOKEN,
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
                 torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                # device_map=training_args.device,
                 **bnb_model_from_pretrained_args
             )
     else:
@@ -837,6 +946,7 @@ def train(attn_implementation=None):
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
             torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            # device_map=training_args.device,
             **bnb_model_from_pretrained_args
         )
     model.config.use_cache = False
@@ -878,6 +988,7 @@ def train(attn_implementation=None):
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
+            token=llava.config.HF_TOKEN,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right"
@@ -885,6 +996,7 @@ def train(attn_implementation=None):
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
+            token=llava.config.HF_TOKEN,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
@@ -912,7 +1024,7 @@ def train(attn_implementation=None):
             model_args=model_args,
             fsdp=training_args.fsdp
         )
-        
+
         vision_tower = model.get_vision_tower()
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
 
@@ -922,6 +1034,8 @@ def train(attn_implementation=None):
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
         model.config.tokenizer_padding_side = tokenizer.padding_side
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
+        if data_args.vision_type == 'video':
+            data_args.num_frames = vision_tower.config.num_frames
 
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
         if model_args.tune_mm_mlp_adapter:
@@ -958,6 +1072,7 @@ def train(attn_implementation=None):
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
+    model.to(training_args.device)
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,

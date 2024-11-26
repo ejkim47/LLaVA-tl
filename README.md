@@ -1,5 +1,52 @@
 # 🌋 LLaVA: Large Language and Vision Assistant
 
+## Here is the new README content that I have added.
+
+### Install
+
+1. Clone this repository and navigate to LLaVA folder
+```bash
+git clone https://github.com/ejkim47/LLaVA-tl.git
+cd LLaVA-tl
+```
+
+2. Set up environment variable
+Set variable in `llava/config.py' (Huggingface key, wandb key, etc.)
+
+3. Install Package
+```Shell
+conda create -n llava python=3.10 -y
+conda activate llava
+pip install --upgrade pip  # enable PEP 660 support
+pip install -e .
+```
+
+4. Install additional packages for training cases
+```
+pip install -e ".[train]"
+pip install flash-attn --no-build-isolation
+```
+
+### Place dataset
+Please include the data folder provided separately in the playground.
+
+### Command for training
+* Pretraining clip-vit-large-patch14 + Llama-2-7b-chat with image-text pairs
+  * This requires huggingface token to download Llama-2-7b-chat-hf model.
+```
+python llava/train/train_mem.py --model_name_or_path meta-llama/Llama-2-7b-chat-hf --version llava_llama_2 --data_path ./playground/data/llava_pretrain/jsons --image_folder ./playground/data/llava_pretrain/images --vision_tower openai/clip-vit-large-patch14 --tune_mm_mlp_adapter True --mm_vision_select_layer -2 --mm_use_im_start_end False --mm_use_im_patch_token False --bf16 True --output_dir ./checkpoints/llava-pretrain-llama-2-7b-chat --num_train_epochs 1 --per_device_train_batch_size 16 --per_device_eval_batch_size 4 --gradient_accumulation_steps 1 --evaluation_strategy "no" --save_strategy "steps" --save_steps 24000 --save_total_limit 1 --learning_rate 2e-3 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --model_max_length 2048 --gradient_checkpointing True --dataloader_num_workers 4 --lazy_preprocess True --report_to wandb
+```
+
+* Pretraining with videomae-base + Llama-2-7b-chat with video-text pairs
+  * This requires huggingface token to download Llama-2-7b-chat-hf model.
+  * The video data comes from InternVid
+```
+python llava/train/train_mem.py --model_name_or_path meta-llama/Llama-2-7b-chat-hf --version llava_llama_2 --vision_type video --data_path ./playground/data/internvid_pick.json --image_folder ./playground/data/InternVid_pick --vision_tower MCG-NJU/videomae-base --tune_mm_mlp_adapter True --mm_vision_select_layer -2 --mm_use_im_start_end False --mm_use_im_patch_token False --bf16 True --output_dir ./checkpoints/llava-video-pretrain-llama-2-7b-chat --num_train_epochs 10 --per_device_train_batch_size 16 --per_device_eval_batch_size 4 --gradient_accumulation_steps 1 --evaluation_strategy "no" --save_strategy "steps" --save_steps 24000 --save_total_limit 1 --learning_rate 2e-3 --weight_decay 0. --warmup_ratio 0.03 --lr_scheduler_type "cosine" --logging_steps 1 --tf32 True --model_max_length 2048 --gradient_checkpointing True --dataloader_num_workers 4 --lazy_preprocess True --report_to wandb
+```
+
+
+## Below is the original README content of the LLaVA GitHub project
+
 *Visual instruction tuning towards large language and vision models with GPT-4 level capabilities.*
 
 [📢 [LLaVA-NeXT Blog](https://llava-vl.github.io/blog/2024-01-30-llava-next/)] [[Project Page](https://llava-vl.github.io/)] [[Demo](https://llava.hliu.cc/)]  [[Data](https://github.com/haotian-liu/LLaVA/blob/main/docs/Data.md)] [[Model Zoo](https://github.com/haotian-liu/LLaVA/blob/main/docs/MODEL_ZOO.md)]
@@ -20,7 +67,7 @@
 
 ## Release
 
-- [2024/05/10] 🔥 **LLaVA-NeXT** (Stronger) models are released, stronger LMM with support of LLama-3 (8B) and Qwen-1.5 (72B/110B). [[Blog](https://llava-vl.github.io/blog/2024-05-10-llava-next-stronger-llms/)] [[Checkpoints](https://huggingface.co/collections/lmms-lab/llava-next-6623288e2d61edba3ddbf5ff)] [[Demo](https://llava-next.lmms-lab.com/)] [[Code](https://github.com/LLaVA-VL/LLaVA-NeXT/)] 
+- [2024/05/10] 🔥 **LLaVA-NeXT** (Stronger) models are released, stronger LMM with support of LLama-3 (8B) and Qwen-1.5 (72B/110B). [[Blog](https://llava-vl.github.io/blog/2024-05-10-llava-next-stronger-llms/)] [[Checkpoints](https://huggingface.co/collections/lmms-lab/llava-next-6623288e2d61edba3ddbf5ff)] [[Demo](https://llava-next.lmms-lab.com/)] [[Code](https://github.com/LLaVA-VL/LLaVA-NeXT/)]
 - [2024/05/10] 🔥 **LLaVA-NeXT** (Video) is released. The image-only-trained LLaVA-NeXT model is surprisingly strong on video tasks with zero-shot modality transfer. DPO training with AI feedback on videos can yield significant improvement. [[Blog](https://llava-vl.github.io/blog/2024-04-30-llava-next-video/)] [[Checkpoints](https://huggingface.co/collections/lmms-lab/llava-next-video-661e86f5e8dabc3ff793c944)] [[Code](https://github.com/LLaVA-VL/LLaVA-NeXT/)]
 - [03/10] Releasing **LMMs-Eval**, a highly efficient evaluation pipeline we used when developing LLaVA-NeXT. It supports the evaluation of LMMs on dozens of public datasets and allows new dataset onboarding, making the dev of new LMMs much faster. [[Blog](https://lmms-lab.github.io/lmms-eval-blog/lmms-eval-0.1/)] [[Codebase](https://github.com/EvolvingLMMs-Lab/lmms-eval)]
 - [1/30] 🔥 **LLaVA-NeXT** (LLaVA-1.6) is out! With additional scaling to LLaVA-1.5, LLaVA-NeXT-34B outperforms Gemini Pro on some benchmarks. It can now process 4x more pixels and perform more tasks/applications than before. Check out the [blog post](https://llava-vl.github.io/blog/2024-01-30-llava-next/), and explore the [demo](https://llava.hliu.cc/)! Models are available in [Model Zoo](https://github.com/haotian-liu/LLaVA/blob/main/docs/MODEL_ZOO.md). Training/eval data and scripts coming soon.
@@ -183,7 +230,7 @@ flowchart BT
     subgraph Demo Connections
         direction BT
         c<-->gws
-        
+
         mw7b<-->c
         mw13b<-->c
         lsglw13b<-->c
@@ -434,14 +481,14 @@ If you find LLaVA useful for your research and applications, please cite using t
 }
 
 @misc{liu2023improvedllava,
-      title={Improved Baselines with Visual Instruction Tuning}, 
+      title={Improved Baselines with Visual Instruction Tuning},
       author={Liu, Haotian and Li, Chunyuan and Li, Yuheng and Lee, Yong Jae},
       publisher={arXiv:2310.03744},
       year={2023},
 }
 
 @misc{liu2023llava,
-      title={Visual Instruction Tuning}, 
+      title={Visual Instruction Tuning},
       author={Liu, Haotian and Li, Chunyuan and Wu, Qingyang and Lee, Yong Jae},
       publisher={NeurIPS},
       year={2023},
